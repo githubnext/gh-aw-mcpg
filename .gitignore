@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Built binary
+gh-aw-mcpg
+
 # Test binary, built with `go test -c`
 *.test
 
