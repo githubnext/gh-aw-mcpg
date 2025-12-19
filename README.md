@@ -77,6 +77,44 @@ A simplified Go port of FlowGuard - a proxy server for Model Context Protocol (M
    cp ~/.codex/config.toml.bak ~/.codex/config.toml
    ```
 
+## Testing with curl
+
+You can test the MCP server directly using curl commands:
+
+### 1. Initialize a session and extract session ID
+
+```bash
+MCP_URL="http://127.0.0.1:8000/mcp/github"
+
+SESSION_ID=$(
+  curl -isS -X POST $MCP_URL \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H 'Authorization: Bearer demo-agent' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0.0","capabilities":{},"clientInfo":{"name":"curl","version":"0.1"}}}' \
+  | awk 'BEGIN{IGNORECASE=1} /^mcp-session-id:/{print $2}' | tr -d '\r'
+)
+
+echo "Session ID: $SESSION_ID"
+```
+
+### 2. List available tools
+
+```bash
+curl -s \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -H 'Authorization: Bearer demo-agent' \
+  -X POST \
+  $MCP_URL \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/list",
+    "params": {}
+  }'
+```
+
 ### Manual Build & Run
 
 If you prefer to run manually without the `run.sh` script:

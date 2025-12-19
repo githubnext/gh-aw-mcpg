@@ -9,7 +9,7 @@ else
 fi
 
 # Default values
-HOST="${HOST:- 127.0.0.1}"
+HOST="${HOST:- 0.0.0.0}"
 PORT="${PORT:-8000}"
 CONFIG="${CONFIG}"
 ENV_FILE="${ENV_FILE:-.env}"
