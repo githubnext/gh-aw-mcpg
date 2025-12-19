@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "github": {
+            "type": "local",
+            "container": "ghcr.io/github/github-mcp-server:latest",
+            "env": {
+                "GITHUB_PERSONAL_ACCESS_TOKEN": ""
+            }
+        },
+        "fetch": {
+            "type": "local",
+            "container": "mcp/fetch"
+        },
+        "memory": {
+            "type": "local",
+            "container": "mcp/memory"
+        }
+    }
+}

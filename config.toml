@@ -1,0 +1,24 @@
+[servers]
+
+[servers.github]
+command = "docker"
+args = ["run", "--rm", "-i",
+        "--name", "flowguard-github-mcp",
+        "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "-e", "NO_COLOR=1", "-e", "TERM=dumb",
+        "ghcr.io/github/github-mcp-server:latest"]
+
+[servers.fetch]
+command = "docker"
+args = ["run", "--rm", "-i",
+        "-e", "NO_COLOR=1", "-e", "TERM=dumb",
+        "-e", "PYTHONUNBUFFERED=1",
+        "mcp/fetch"]
+
+[servers.memory]
+command = "docker"
+args = ["run", "--rm", "-i", "-e", "NO_COLOR=1", "-e", "TERM=dumb", "-e", "PYTHONUNBUFFERED=1", "mcp/memory"]
+
+# Note: DOCKER_API_VERSION is automatically set based on architecture
+# - ARM64 (M1/M2/M3 Macs): 1.43
+# - x86_64 (Intel, GitHub Actions): 1.44

@@ -1,0 +1,34 @@
+model = "gpt-5.1-codex-max"
+sandbox_mode = "workspace-write"
+model_reasoning_effort = "high"
+
+[mcp_servers.flowguard]
+url = "http://host.docker.internal:8000/mcp/sys"
+transport = "streamablehttp"
+tool_timeout_sec = 120000
+startup_timeout_ms = 180000
+bearer_token_env_var = "AGENT_ID"
+
+[mcp_servers.github]
+url = "http://host.docker.internal:8000/mcp/github"
+transport = "streamablehttp"
+tool_timeout_sec = 120000
+startup_timeout_ms = 180000
+bearer_token_env_var = "AGENT_ID"
+
+[mcp_servers.fetch]
+url = "http://host.docker.internal:8000/mcp/fetch"
+transport = "streamablehttp"
+tool_timeout_sec = 120000
+startup_timeout_ms = 180000
+bearer_token_env_var = "AGENT_ID"
+
+[mcp_servers.memory]
+url = "http://host.docker.internal:8000/mcp/memory"
+transport = "streamablehttp"
+tool_timeout_sec = 120000
+startup_timeout_ms = 180000
+bearer_token_env_var = "AGENT_ID"
+
+[projects."/workspace/"]
+trust_level="trusted"
