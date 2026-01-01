@@ -9,6 +9,7 @@ RUN go mod download
 
 # Copy source code
 COPY . .
+RUN go mod tidy
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -o flowguard-go .
