@@ -1,0 +1,33 @@
+# Environment files - contain secrets
+.env
+.env.*
+*.env
+
+# Git files
+.git
+.gitignore
+
+# Build artifacts
+flowguard-go
+*.log
+
+# Documentation and configs not needed in image
+README.md
+LICENSE
+example.env
+agent-configs/
+
+# Docker files
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+*_test.go
