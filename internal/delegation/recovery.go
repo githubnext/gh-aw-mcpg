@@ -165,19 +165,7 @@ func validateRestoredIdentity(identity *Identity, envelope *Envelope, generation
 	if !identity.InvocationExpiresAt.IsZero() && identity.ExpiresAt.After(identity.InvocationExpiresAt) {
 		return fmt.Errorf("identity expiry exceeds invocation expiry")
 	}
-	return (&Store{envelope: envelope}).validateAgainstEnvelope(CreateOrConfirmRequest{
-		RunID:                    identity.RunID,
-		EnclaveBackend:           identity.EnclaveBackend,
-		EnclaveEntryID:           identity.EnclaveEntryID,
-		InvocationID:             identity.InvocationID,
-		Repository:               identity.Repository,
-		ToolPolicy:               identity.ToolPolicy,
-		SchemaHash:               identity.SchemaHash,
-		AdmittedDefaultBranchSHA: identity.AdmittedDefaultBranchSHA,
-		RequestedTTL:             identity.ExpiresAt.Sub(identity.CreatedAt),
-		InvocationExpiresAt:      identity.InvocationExpiresAt,
-		IdempotencyKey:           identity.IdempotencyKey,
-	}, identity.CreatedAt)
+	return (&Store{envelope: envelope}).validateAgainstEnvelope(identity.toRequest(), identity.CreatedAt)
 }
 
 // parsePersistedState verifies the trailing checksum and decodes the JSON

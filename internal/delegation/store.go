@@ -175,22 +175,15 @@ func (s *Store) createOrConfirmAt(req CreateOrConfirmRequest, now time.Time) (*I
 		return nil, err
 	}
 
+	binding := bindingFromRequest(req)
 	identity := &Identity{
-		Handle:                   handle,
-		ExecutorBearer:           bearer,
-		RunID:                    req.RunID,
-		EnclaveBackend:           req.EnclaveBackend,
-		EnclaveEntryID:           req.EnclaveEntryID,
-		InvocationID:             req.InvocationID,
-		Repository:               req.Repository,
-		ToolPolicy:               req.ToolPolicy,
-		SchemaHash:               req.SchemaHash,
-		AdmittedDefaultBranchSHA: req.AdmittedDefaultBranchSHA,
-		ExpiresAt:                identityExpiry(now, req.RequestedTTL, s.envelope.ExpiresAt, req.InvocationExpiresAt),
-		InvocationExpiresAt:      req.InvocationExpiresAt,
-		PolicyGeneration:         s.generation,
-		IdempotencyKey:           req.IdempotencyKey,
-		CreatedAt:                now,
+		Handle:            handle,
+		ExecutorBearer:    bearer,
+		delegationBinding: binding,
+		ExpiresAt:         identityExpiry(now, req.RequestedTTL, s.envelope.ExpiresAt, req.InvocationExpiresAt),
+		PolicyGeneration:  s.generation,
+		IdempotencyKey:    req.IdempotencyKey,
+		CreatedAt:         now,
 	}
 	s.indexLocked(identity)
 

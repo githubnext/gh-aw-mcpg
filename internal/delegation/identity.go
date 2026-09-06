@@ -39,11 +39,9 @@ type CreateOrConfirmRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-// Identity is one invocation-scoped delegated identity bound to a single
-// canonical repository under github-repository-read-v1.
-type Identity struct {
-	Handle                   string    `json:"handle"`
-	ExecutorBearer           string    `json:"executor_bearer"`
+// delegationBinding is the request/identity tuple that must remain identical
+// across create, confirm, and restart recovery.
+type delegationBinding struct {
 	RunID                    string    `json:"run_id"`
 	EnclaveBackend           string    `json:"enclave_backend"`
 	EnclaveEntryID           string    `json:"enclave_entry_id"`
@@ -52,12 +50,62 @@ type Identity struct {
 	ToolPolicy               string    `json:"tool_policy"`
 	SchemaHash               string    `json:"schema_hash"`
 	AdmittedDefaultBranchSHA string    `json:"admitted_default_branch_sha,omitempty"`
-	ExpiresAt                time.Time `json:"expires_at"`
 	InvocationExpiresAt      time.Time `json:"invocation_expires_at,omitempty"`
-	PolicyGeneration         uint64    `json:"policy_generation"`
-	IdempotencyKey           string    `json:"idempotency_key"`
-	CreatedAt                time.Time `json:"created_at"`
-	Revoked                  bool      `json:"revoked"`
+}
+
+func bindingFromRequest(req CreateOrConfirmRequest) delegationBinding {
+	return delegationBinding{
+		RunID:                    req.RunID,
+		EnclaveBackend:           req.EnclaveBackend,
+		EnclaveEntryID:           req.EnclaveEntryID,
+		InvocationID:             req.InvocationID,
+		Repository:               req.Repository,
+		ToolPolicy:               req.ToolPolicy,
+		SchemaHash:               req.SchemaHash,
+		AdmittedDefaultBranchSHA: req.AdmittedDefaultBranchSHA,
+		InvocationExpiresAt:      req.InvocationExpiresAt,
+	}
+}
+
+func (b delegationBinding) equals(other delegationBinding) bool {
+	return b.RunID == other.RunID &&
+		b.EnclaveBackend == other.EnclaveBackend &&
+		b.EnclaveEntryID == other.EnclaveEntryID &&
+		b.InvocationID == other.InvocationID &&
+		b.Repository == other.Repository &&
+		b.ToolPolicy == other.ToolPolicy &&
+		b.SchemaHash == other.SchemaHash &&
+		b.AdmittedDefaultBranchSHA == other.AdmittedDefaultBranchSHA &&
+		b.InvocationExpiresAt.Equal(other.InvocationExpiresAt)
+}
+
+func (b delegationBinding) toRequest(requestedTTL time.Duration, idempotencyKey string) CreateOrConfirmRequest {
+	return CreateOrConfirmRequest{
+		RunID:                    b.RunID,
+		EnclaveBackend:           b.EnclaveBackend,
+		EnclaveEntryID:           b.EnclaveEntryID,
+		InvocationID:             b.InvocationID,
+		Repository:               b.Repository,
+		ToolPolicy:               b.ToolPolicy,
+		SchemaHash:               b.SchemaHash,
+		AdmittedDefaultBranchSHA: b.AdmittedDefaultBranchSHA,
+		RequestedTTL:             requestedTTL,
+		InvocationExpiresAt:      b.InvocationExpiresAt,
+		IdempotencyKey:           idempotencyKey,
+	}
+}
+
+// Identity is one invocation-scoped delegated identity bound to a single
+// canonical repository under github-repository-read-v1.
+type Identity struct {
+	Handle         string `json:"handle"`
+	ExecutorBearer string `json:"executor_bearer"`
+	delegationBinding
+	ExpiresAt        time.Time `json:"expires_at"`
+	PolicyGeneration uint64    `json:"policy_generation"`
+	IdempotencyKey   string    `json:"idempotency_key"`
+	CreatedAt        time.Time `json:"created_at"`
+	Revoked          bool      `json:"revoked"`
 }
 
 // idempotencyScopeKey returns the compound key CreateOrConfirm dedupes on:
@@ -109,13 +157,9 @@ func (id *Identity) toResult() *IdentityResult {
 // toResult) always stands. Per the ADR, any mismatch here is terminal: the
 // caller must revoke any partial identity and fail the request.
 func (id *Identity) bindingEquals(req CreateOrConfirmRequest) bool {
-	return id.RunID == req.RunID &&
-		id.EnclaveBackend == req.EnclaveBackend &&
-		id.EnclaveEntryID == req.EnclaveEntryID &&
-		id.InvocationID == req.InvocationID &&
-		id.Repository == req.Repository &&
-		id.ToolPolicy == req.ToolPolicy &&
-		id.SchemaHash == req.SchemaHash &&
-		id.AdmittedDefaultBranchSHA == req.AdmittedDefaultBranchSHA &&
-		id.InvocationExpiresAt.Equal(req.InvocationExpiresAt)
+	return id.delegationBinding.equals(bindingFromRequest(req))
+}
+
+func (id *Identity) toRequest() CreateOrConfirmRequest {
+	return id.delegationBinding.toRequest(id.ExpiresAt.Sub(id.CreatedAt), id.IdempotencyKey)
 }
