@@ -128,6 +128,10 @@ func (g *guardBackendCaller) callCollaboratorPermission(ctx context.Context, arg
 			return resp, nil
 		},
 		logUnified.Printf,
+		// This is the launcher-backed unified/routed server, which has no
+		// enclave or delegation mode (those only exist in internal/proxy.Server);
+		// there is no private-repository selector to redact here.
+		false,
 	)
 	if err != nil {
 		logUnified.Printf("get_collaborator_permission: request failed for %s/%s user %s: %v", owner, repo, username, err)

@@ -99,3 +99,32 @@ func TestToolPolicyGitHubRepositoryReadV1Constant(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "github-repository-read-v1", ToolPolicyGitHubRepositoryReadV1)
 }
+
+func TestIsCanonicalOwner(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		owner string
+		want  bool
+	}{
+		{"simple owner", "github", true},
+		{"owner with hyphen", "my-org", true},
+		{"owner starting with digit", "0wner", true},
+		{"empty string", "", false},
+		{"uppercase must be rejected, no case folding", "GitHub", false},
+		{"trailing whitespace must be rejected, no trimming", "github ", false},
+		{"owner cannot start with '-'", "-github", false},
+		{"contains a slash", "github/gh-aw", false},
+		{"non-ASCII byte", "gi™thub", false},
+		{"over-length owner", strings.Repeat("a", 40), false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsCanonicalOwner(tt.owner), "owner %q", tt.owner)
+		})
+	}
+}

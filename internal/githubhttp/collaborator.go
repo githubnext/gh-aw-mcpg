@@ -35,22 +35,31 @@ func ParseCollaboratorPermissionArgs(argsMap map[string]interface{}) (owner, rep
 //
 // This helper is shared between the server and proxy packages to eliminate
 // duplicated parse/log/wrap logic. Callers pass their own debug logger's Printf
-// method so that log lines appear under the correct namespace.
+// method so that log lines appear under the correct namespace. When sensitive
+// is true (enclave or delegation mode), owner/repo/username are hashed before
+// being written to the log line instead of appearing verbatim.
 func WrapCollaboratorPermission(
 	body []byte,
 	owner, repo, username string,
 	statusCode int,
 	logPrintf func(format string, args ...interface{}),
+	sensitive bool,
 ) interface{} {
+	ownerForLog, repoForLog, usernameForLog := owner, repo, username
+	if sensitive {
+		ownerForLog = util.HashForLog(owner, 16, "owner:")
+		repoForLog = util.HashForLog(repo, 16, "repo:")
+		usernameForLog = util.HashForLog(username, 16, "user:")
+	}
 	var permResp map[string]interface{}
 	if jsonErr := json.Unmarshal(body, &permResp); jsonErr == nil {
 		if perm, ok := permResp["permission"].(string); ok {
-			logPrintf("get_collaborator_permission: %s/%s user %s → permission=%q (HTTP %d)", owner, repo, username, perm, statusCode)
+			logPrintf("get_collaborator_permission: %s/%s user %s → permission=%q (HTTP %d)", ownerForLog, repoForLog, usernameForLog, perm, statusCode)
 		} else {
-			logPrintf("get_collaborator_permission: %s/%s user %s → HTTP %d, permission field missing from response", owner, repo, username, statusCode)
+			logPrintf("get_collaborator_permission: %s/%s user %s → HTTP %d, permission field missing from response", ownerForLog, repoForLog, usernameForLog, statusCode)
 		}
 	} else {
-		logPrintf("get_collaborator_permission: %s/%s user %s → HTTP %d, %d bytes (JSON parse failed: %v)", owner, repo, username, statusCode, len(body), jsonErr)
+		logPrintf("get_collaborator_permission: %s/%s user %s → HTTP %d, %d bytes (JSON parse failed: %v)", ownerForLog, repoForLog, usernameForLog, statusCode, len(body), jsonErr)
 	}
 	return map[string]interface{}{
 		"content": []map[string]interface{}{
@@ -63,15 +72,25 @@ func WrapCollaboratorPermission(
 // using the provided fetch function and returns the wrapped MCP text response.
 //
 // The fetch callback should perform the authenticated HTTP request for the
-// given API path and return the upstream response.
+// given API path and return the upstream response. When sensitive is true
+// (enclave or delegation mode), owner/repo/username/apiPath are hashed before
+// being written to this package's own debug log lines.
 func FetchCollaboratorPermission(
 	ctx context.Context,
 	owner, repo, username string,
 	fetch func(ctx context.Context, apiPath string) (*http.Response, error),
 	logPrintf func(format string, args ...interface{}),
+	sensitive bool,
 ) (interface{}, error) {
 	apiPath := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission", owner, repo, username)
-	logCollab.Printf("FetchCollaboratorPermission: owner=%s, repo=%s, username=%s, apiPath=%s", owner, repo, username, apiPath)
+	ownerForLog, repoForLog, usernameForLog, apiPathForLog := owner, repo, username, apiPath
+	if sensitive {
+		ownerForLog = util.HashForLog(owner, 16, "owner:")
+		repoForLog = util.HashForLog(repo, 16, "repo:")
+		usernameForLog = util.HashForLog(username, 16, "user:")
+		apiPathForLog = util.HashForLog(apiPath, 16, "path:")
+	}
+	logCollab.Printf("FetchCollaboratorPermission: owner=%s, repo=%s, username=%s, apiPath=%s", ownerForLog, repoForLog, usernameForLog, apiPathForLog)
 
 	resp, err := fetch(ctx, apiPath)
 	if err != nil {
@@ -80,10 +99,10 @@ func FetchCollaboratorPermission(
 	}
 	body, err := httputil.ReadResponseBody(resp, "GitHub collaborator API")
 	if err != nil {
-		logCollab.Printf("FetchCollaboratorPermission: GitHub collaborator API error: owner=%s, repo=%s, username=%s, err=%v", owner, repo, username, err)
+		logCollab.Printf("FetchCollaboratorPermission: GitHub collaborator API error: owner=%s, repo=%s, username=%s, err=%v", ownerForLog, repoForLog, usernameForLog, err)
 		return nil, err
 	}
 	logCollab.Printf("FetchCollaboratorPermission: response received: status=%d, bodyLen=%d", resp.StatusCode, len(body))
 
-	return WrapCollaboratorPermission(body, owner, repo, username, resp.StatusCode, logPrintf), nil
+	return WrapCollaboratorPermission(body, owner, repo, username, resp.StatusCode, logPrintf, sensitive), nil
 }

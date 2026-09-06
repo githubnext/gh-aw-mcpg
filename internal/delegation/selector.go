@@ -78,6 +78,20 @@ func IsCanonicalRepositorySelector(selector string) bool {
 	return true
 }
 
+// canonicalOwnerPattern is the owner-segment half of
+// canonicalSelectorPattern, used to validate an envelope's AllowedOwners
+// independent of any specific repository name.
+var canonicalOwnerPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,38})$`)
+
+// IsCanonicalOwner reports whether selector is already the exact canonical
+// ASCII byte sequence required for a repository owner:
+// ^[a-z0-9](?:[a-z0-9-]{0,38})$. There is no trimming, case folding, Unicode
+// normalization, or URL decoding: callers must reject any selector for which
+// this returns false rather than attempt to normalize it.
+func IsCanonicalOwner(selector string) bool {
+	return isASCII(selector) && canonicalOwnerPattern.MatchString(selector)
+}
+
 func isASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] > 0x7f {

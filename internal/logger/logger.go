@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/github/gh-aw-mcpg/internal/sanitize"
 	"github.com/github/gh-aw-mcpg/internal/tty"
 	"github.com/github/gh-aw-mcpg/internal/util"
 )
@@ -132,6 +133,10 @@ func (l *Logger) emit(messageFn func() string) {
 	l.mu.Unlock()
 
 	message := messageFn()
+	// Enclave and delegation profiles enable process-wide private-selector
+	// redaction. Apply it here so the stderr sink gets the same protection the
+	// file sinks get through sanitize.SanitizeString in formatLogLine.
+	message = sanitize.RedactPrivateSelectorsIfEnabled(message)
 
 	// Write to stderr with colors and time diff
 	if l.color != "" {

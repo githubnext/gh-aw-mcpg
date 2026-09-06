@@ -86,7 +86,7 @@ func TestWrapCollaboratorPermission(t *testing.T) {
 		var logged []string
 		result := WrapCollaboratorPermission(body, "myorg", "myrepo", "alice", 200, func(format string, args ...interface{}) {
 			logged = append(logged, fmt.Sprintf(format, args...))
-		})
+		}, false)
 
 		// Verify log message includes owner/repo/username context and permission
 		require.Len(t, logged, 1)
@@ -118,7 +118,7 @@ func TestWrapCollaboratorPermission(t *testing.T) {
 		var logged []string
 		result := WrapCollaboratorPermission(body, "org", "repo", "bob", 200, func(format string, args ...interface{}) {
 			logged = append(logged, fmt.Sprintf(format, args...))
-		})
+		}, false)
 
 		require.Len(t, logged, 1)
 		assert.Contains(t, logged[0], "org/repo")
@@ -139,7 +139,7 @@ func TestWrapCollaboratorPermission(t *testing.T) {
 		var logged []string
 		result := WrapCollaboratorPermission(body, "org", "repo", "charlie", 200, func(format string, args ...interface{}) {
 			logged = append(logged, fmt.Sprintf(format, args...))
-		})
+		}, false)
 
 		require.Len(t, logged, 1)
 		assert.Contains(t, logged[0], "org/repo")
@@ -160,10 +160,27 @@ func TestWrapCollaboratorPermission(t *testing.T) {
 		var logged []string
 		WrapCollaboratorPermission(body, "org", "repo", "dave", 201, func(format string, args ...interface{}) {
 			logged = append(logged, fmt.Sprintf(format, args...))
-		})
+		}, false)
 
 		require.Len(t, logged, 1)
 		assert.Contains(t, logged[0], "HTTP 201")
+	})
+
+	t.Run("sensitive mode hashes owner/repo/username instead of logging them verbatim", func(t *testing.T) {
+		body := []byte(`{"permission":"admin"}`)
+
+		var logged []string
+		WrapCollaboratorPermission(body, "private-org", "private-repo", "eve", 200, func(format string, args ...interface{}) {
+			logged = append(logged, fmt.Sprintf(format, args...))
+		}, true)
+
+		require.Len(t, logged, 1)
+		assert.NotContains(t, logged[0], "private-org")
+		assert.NotContains(t, logged[0], "private-repo")
+		assert.NotContains(t, logged[0], "eve")
+		assert.Contains(t, logged[0], "owner:")
+		assert.Contains(t, logged[0], "repo:")
+		assert.Contains(t, logged[0], "user:")
 	})
 }
 
@@ -183,6 +200,7 @@ func TestFetchCollaboratorPermissionHelper(t *testing.T) {
 				}, nil
 			},
 			func(format string, args ...interface{}) {},
+			false,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, "/repos/myorg/myrepo/collaborators/alice/permission", gotPath)
@@ -199,6 +217,7 @@ func TestFetchCollaboratorPermissionHelper(t *testing.T) {
 				return nil, fmt.Errorf("REST call failed: boom")
 			},
 			func(format string, args ...interface{}) {},
+			false,
 		)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "REST call failed: boom")
@@ -217,6 +236,7 @@ func TestFetchCollaboratorPermissionHelper(t *testing.T) {
 				}, nil
 			},
 			func(format string, args ...interface{}) {},
+			false,
 		)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "failed to read GitHub collaborator API response")
@@ -235,6 +255,7 @@ func TestFetchCollaboratorPermissionHelper(t *testing.T) {
 				}, nil
 			},
 			func(format string, args ...interface{}) {},
+			false,
 		)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "GitHub collaborator API returned HTTP 404")
@@ -250,6 +271,7 @@ func TestFetchCollaboratorPermissionHelper(t *testing.T) {
 				return nil, nil
 			},
 			func(format string, args ...interface{}) {},
+			false,
 		)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "failed to read GitHub collaborator API response: nil response")
@@ -265,6 +287,7 @@ func TestFetchCollaboratorPermissionHelper(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusOK, Body: nil}, nil
 			},
 			func(format string, args ...interface{}) {},
+			false,
 		)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "response body is nil")

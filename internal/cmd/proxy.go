@@ -364,6 +364,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	logProxyCmd.Printf("Proxy server created successfully")
 
 	var controlHTTPServer *http.Server
+	controlListenerErrCh := make(chan error, 1)
 	if delegationConfig != nil {
 		controlListener, err := net.Listen("tcp", delegationConfig.ControlListenAddr)
 		if err != nil {
@@ -374,7 +375,14 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		}
 		go func() {
 			if err := controlHTTPServer.Serve(controlListener); err != nil && err != http.ErrServerClosed {
-				logger.LogError("delegation", "Private delegation control channel exited: %v", err)
+				// A post-start failure of the private control listener
+				// must not silently leave the data plane running while
+				// AWF loses its only way to create, confirm, revoke, or
+				// reconcile delegated identities: treat it as fatal to
+				// the whole proxy process rather than merely logging it.
+				logger.LogError("delegation", "Private delegation control channel exited unexpectedly, shutting down: %v", err)
+				controlListenerErrCh <- err
+				cancel()
 			}
 		}()
 		defer func() {
@@ -462,6 +470,15 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		},
 	)
 
+	// A control-listener failure triggers cancel(), which typically makes the
+	// main serve loop above return its own (e.g. context-canceled) error first.
+	// Always drain the channel and prioritize the control-listener error as the
+	// real root cause when present, regardless of what the serve loop returned.
+	select {
+	case controlErr := <-controlListenerErrCh:
+		err = fmt.Errorf("private delegation control channel failed: %w", controlErr)
+	default:
+	}
 	if err != nil {
 		logger.LogError("shutdown", "Proxy server exited with error: %v", err)
 		return err

@@ -35,6 +35,11 @@ type PipelineInput struct {
 	EnforcementMode difc.EnforcementMode
 	// BackendCaller is used by the guard for metadata enrichment calls.
 	BackendCaller BackendCaller
+	// SensitiveLogging indicates the resource description may contain a
+	// private repository selector (enclave or delegation mode). When true,
+	// RunPipelinePrePhases hashes resource.Description before writing it to
+	// the shared debug log sink instead of logging it verbatim.
+	SensitiveLogging bool
 }
 
 // PipelinePreResult holds the outputs from phases 0–2 of the DIFC pipeline.
@@ -96,7 +101,9 @@ func RunPipelinePrePhases(ctx context.Context, in PipelineInput) (context.Contex
 	// **Phase 0: Get or create agent labels**
 	agentLabels := in.AgentRegistry.GetOrCreate(in.AgentID)
 	logPipeline.Printf("[DIFC] Phase 0: agent=%s secrecy=%v integrity=%v",
-		util.HashIdentifierForLog(in.AgentID), agentLabels.GetSecrecyTags(), agentLabels.GetIntegrityTags())
+		util.HashIdentifierForLog(in.AgentID),
+		logSafeTags(agentLabels.GetSecrecyTags(), in.SensitiveLogging),
+		logSafeTags(agentLabels.GetIntegrityTags(), in.SensitiveLogging))
 
 	// Store tool args in context so LabelResponse (Phase 4) can pass them to the guard.
 	ctx = SetRequestStateInContext(ctx, map[string]interface{}{
@@ -109,21 +116,26 @@ func RunPipelinePrePhases(ctx context.Context, in PipelineInput) (context.Contex
 		logPipeline.Printf("[DIFC] Phase 1 failed: tool=%s err=%v", in.ToolName, err)
 		return ctx, nil, fmt.Errorf("resource labeling failed: %w", err)
 	}
+	resourceDescForLog := resource.Description
+	if in.SensitiveLogging {
+		resourceDescForLog = util.HashForLog(resource.Description, 16, "resource:")
+	}
 	logPipeline.Printf("[DIFC] Phase 1: resource=%s op=%s secrecy=%v integrity=%v",
-		resource.Description, operation,
-		resource.Secrecy.Label.GetTags(), resource.Integrity.Label.GetTags())
+		resourceDescForLog, operation,
+		logSafeTags(resource.Secrecy.Label.GetTags(), in.SensitiveLogging),
+		logSafeTags(resource.Integrity.Label.GetTags(), in.SensitiveLogging))
 
 	// **Phase 2: Coarse-grained access check**
 	coarseOutcome, evalResult := difc.EvaluateCoarseAccess(
 		in.Evaluator, agentLabels.Secrecy, agentLabels.Integrity, resource, operation)
 	switch coarseOutcome {
 	case difc.CoarseAllowed:
-		logPipeline.Printf("[DIFC] Phase 2: access allowed for agent %s to %s", util.HashIdentifierForLog(in.AgentID), resource.Description)
+		logPipeline.Printf("[DIFC] Phase 2: access allowed for agent %s to %s", util.HashIdentifierForLog(in.AgentID), resourceDescForLog)
 	case difc.CoarseBypassForRead:
 		logPipeline.Printf("[DIFC] Phase 2: coarse check failed for read, proceeding to Phase 3")
 	case difc.CoarseDenied:
 		logPipeline.Printf("[DIFC] Phase 2: access denied for agent %s to %s: %s",
-			util.HashIdentifierForLog(in.AgentID), resource.Description, evalResult.Reason)
+			util.HashIdentifierForLog(in.AgentID), resourceDescForLog, evalResult.Reason)
 		return ctx, nil, &PipelineAccessDenied{
 			EvalResult:  evalResult,
 			Resource:    resource,
@@ -183,4 +195,21 @@ func RunPipelinePhase6(pre *PipelinePreResult, labeledData difc.LabeledData, enf
 		logPipeline.Printf("[DIFC] Phase 6: accumulated labels from resource (agent=%s secrecy=%v integrity=%v)",
 			pre.AgentLabels.AgentID, pre.AgentLabels.GetSecrecyTags(), pre.AgentLabels.GetIntegrityTags())
 	}
+}
+
+// logSafeTags renders DIFC label tags for the debug log. Secrecy and integrity
+// tags embed the repository selector they protect (for example
+// "private:owner/private-repo"), so in enclave and delegation modes each tag is
+// replaced with a stable hash. The hash is stable across lines and processes,
+// so tag identity and cardinality remain diagnosable without disclosing the
+// selector.
+func logSafeTags(tags []difc.Tag, sensitive bool) []difc.Tag {
+	if !sensitive || len(tags) == 0 {
+		return tags
+	}
+	safe := make([]difc.Tag, len(tags))
+	for i, tag := range tags {
+		safe[i] = difc.Tag(util.HashForLog(string(tag), 16, "tag:"))
+	}
+	return safe
 }

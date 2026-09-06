@@ -13,6 +13,7 @@ import (
 	"github.com/github/gh-aw-mcpg/internal/httputil"
 	"github.com/github/gh-aw-mcpg/internal/logger"
 	"github.com/github/gh-aw-mcpg/internal/tracing"
+	"github.com/github/gh-aw-mcpg/internal/util"
 )
 
 var logDelegation = logger.ForFile()
@@ -79,7 +80,7 @@ func (h *proxyHandler) handleDelegationControl(w http.ResponseWriter, r *http.Re
 			return
 		}
 		if err := h.server.delegation.store.Revoke(request.Handle); err != nil {
-			logDelegation.Printf("Delegation revoke failed for handle=%s", request.Handle)
+			logDelegation.Printf("Delegation revoke failed for handle_hash=%s", util.HashForLog(request.Handle, 16, ""))
 			httputil.WriteErrorResponse(w, http.StatusInternalServerError, "delegation_revoke_failed", "delegation revoke failed")
 			return
 		}
@@ -96,11 +97,40 @@ func (h *proxyHandler) handleDelegationControl(w http.ResponseWriter, r *http.Re
 			return
 		}
 		revoked := h.server.delegation.store.RevokeByLabels(request.RunID, request.EnclaveEntryID)
-		logDelegation.Printf("Revoked %d delegation(s) by labels: run_id=%s enclave_entry_id=%s", revoked, request.RunID, request.EnclaveEntryID)
+		logDelegation.Printf("Revoked %d delegation(s) by labels: run_hash=%s enclave_entry_id_hash=%s", revoked, util.HashForLog(request.RunID, 16, ""), util.HashForLog(request.EnclaveEntryID, 16, ""))
 		if !h.persistDelegationState(w) {
 			return
 		}
 		httputil.WriteJSONResponse(w, http.StatusOK, map[string]int{"revoked": revoked})
+	case delegationControlPath + "status":
+		var request struct {
+			RunID          string `json:"run_id"`
+			EnclaveEntryID string `json:"enclave_entry_id"`
+		}
+		if !decodeDelegationJSON(w, r, &request) {
+			return
+		}
+		if request.RunID == "" || request.EnclaveEntryID == "" {
+			httputil.WriteErrorResponse(w, http.StatusBadRequest, "delegation_status_invalid_request", "run_id and enclave_entry_id are required")
+			return
+		}
+		status := h.server.delegation.store.Status()
+		httputil.WriteJSONResponse(w, http.StatusOK, map[string]any{
+			"recovery_incomplete": status.RecoveryIncomplete,
+			"generation":          status.Generation,
+			"live_identity_count": status.LiveIdentityCount,
+			"labelled_handles":    h.server.delegation.store.LabelHandles(request.RunID, request.EnclaveEntryID),
+		})
+	case delegationControlPath + "reconcile":
+		// Reconcile explicitly clears the recovery-incomplete flag once
+		// AWF has inspected (and, via revoke/revoke-by-labels, revoked)
+		// any outstanding labelled state from a prior restart, letting new
+		// dynamic admissions resume.
+		h.server.delegation.store.MarkReconciled()
+		if !h.persistDelegationState(w) {
+			return
+		}
+		httputil.WriteJSONResponse(w, http.StatusOK, map[string]bool{"reconciled": true})
 	default:
 		http.NotFound(w, r)
 	}
@@ -156,13 +186,18 @@ func (h *proxyHandler) handleDelegatedRequest(w http.ResponseWriter, r *http.Req
 	}
 	route, err := enclavegithub.MatchRoute(path, query)
 	if err != nil {
-		logDelegation.Printf("No matching enclave route for path=%s", path)
+		logDelegation.Printf("No matching enclave route for path_hash=%s", util.HashForLog(path, 16, ""))
 		writeEnclaveDenied(w)
 		return
 	}
 	toolName, args := enclaveToolAndArgs(route)
-	if toolName == "" || h.server.delegation.store.AuthorizeExecutor(r.Header.Get("Authorization"), route.FullRepo(), toolName) != nil {
-		logDelegation.Printf("Executor not authorized for tool=%s repo=%s", toolName, route.FullRepo())
+	if toolName == "" {
+		writeEnclaveDenied(w)
+		return
+	}
+	handle, err := h.server.delegation.store.AuthorizeExecutor(r.Header.Get("Authorization"), route.FullRepo(), toolName)
+	if err != nil {
+		logDelegation.Printf("Executor not authorized for tool=%s repo_hash=%s", toolName, util.HashForLog(route.FullRepo(), 16, ""))
 		writeEnclaveDenied(w)
 		return
 	}
@@ -170,6 +205,11 @@ func (h *proxyHandler) handleDelegatedRequest(w http.ResponseWriter, r *http.Req
 	if r.URL.RawQuery != "" {
 		fullPath += "?" + r.URL.RawQuery
 	}
-	logDelegation.Printf("Delegating request: tool=%s repo=%s path=%s", toolName, route.FullRepo(), path)
-	h.handleWithDIFC(w, r, fullPath, toolName, args, nil)
+	logDelegation.Printf("Delegating request: tool=%s repo_hash=%s path_hash=%s", toolName, util.HashForLog(route.FullRepo(), 16, ""), util.HashForLog(path, 16, ""))
+	// Bind this request to a delegation-specific isolation context, keyed
+	// on the identity's own opaque handle and assigned repository, rather
+	// than letting it fall through to the shared fallback proxy DIFC
+	// identity used by ordinary (non-delegated, non-enclave) requests.
+	ctx := withEnclaveAuthorization(r.Context(), "delegation:"+handle, route.FullRepo())
+	h.handleWithDIFC(w, r.WithContext(ctx), fullPath, toolName, args, nil)
 }

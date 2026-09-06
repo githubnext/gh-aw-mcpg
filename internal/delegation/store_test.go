@@ -129,6 +129,76 @@ func TestCreateOrConfirm_ConcurrentSameKeyIsAtomic(t *testing.T) {
 	}
 }
 
+func TestCreateOrConfirm_DifferentIdempotencyKeysSameInvocationConfirmsInsteadOfDuplicating(t *testing.T) {
+	store, _ := newTestStore(t)
+	req := validRequest()
+
+	created, err := store.CreateOrConfirm(req)
+	require.NoError(t, err)
+
+	retry := req
+	retry.IdempotencyKey = "a-completely-different-idempotency-key"
+	confirmed, err := store.CreateOrConfirm(retry)
+	require.NoError(t, err, "a retry for the same invocation with a different idempotency key must confirm, not error")
+	assert.Equal(t, created.Handle, confirmed.Handle, "one invocation must never produce a second identity merely because the idempotency key changed")
+	assert.Equal(t, created.ExecutorBearer, confirmed.ExecutorBearer)
+}
+
+func TestCreateOrConfirm_DifferentIdempotencyKeyWithMismatchedBindingIsTerminal(t *testing.T) {
+	store, _ := newTestStore(t)
+	req := validRequest()
+
+	created, err := store.CreateOrConfirm(req)
+	require.NoError(t, err)
+
+	mismatched := req
+	mismatched.IdempotencyKey = "a-different-key"
+	mismatched.Repository = "github/gh-aw-firewall" // different binding, different idempotency key
+
+	_, err = store.CreateOrConfirm(mismatched)
+	require.Error(t, err, "a mismatched binding must be denied even under a different idempotency key")
+
+	require.Error(t, store.Authorize(created.ExecutorBearer, req.RunID, req.EnclaveBackend, req.Repository, "issue_read"),
+		"the original identity must have been revoked as part of the terminal mismatch")
+}
+
+func TestCreateOrConfirm_BoundedDynamicSchemaHashAdmission(t *testing.T) {
+	envelope := validEnvelope()
+	envelope.AllowedSchemaHashes = nil
+	envelope.MaxDynamicSchemaHashes = 2
+	store, err := NewStore(envelope, 1)
+	require.NoError(t, err)
+
+	first := validRequest()
+	first.SchemaHash = "sha256:dynamic-1"
+	_, err = store.CreateOrConfirm(first)
+	require.NoError(t, err)
+
+	second := validRequest()
+	second.InvocationID = "inv-2"
+	second.IdempotencyKey = "idem-2"
+	second.SchemaHash = "sha256:dynamic-2"
+	_, err = store.CreateOrConfirm(second)
+	require.NoError(t, err)
+
+	// A third distinct schema hash exceeds the bound and must be denied.
+	third := validRequest()
+	third.InvocationID = "inv-3"
+	third.IdempotencyKey = "idem-3"
+	third.SchemaHash = "sha256:dynamic-3"
+	_, err = store.CreateOrConfirm(third)
+	require.Error(t, err, "a third distinct dynamic schema hash must exceed the bound")
+
+	// Reusing an already-admitted hash for a new invocation still works: the
+	// bound is on distinct hashes, not on identities.
+	fourth := validRequest()
+	fourth.InvocationID = "inv-4"
+	fourth.IdempotencyKey = "idem-4"
+	fourth.SchemaHash = "sha256:dynamic-1"
+	_, err = store.CreateOrConfirm(fourth)
+	assert.NoError(t, err)
+}
+
 func TestAuthorize_RejectsWrongRepoWrongToolWrongRunAndReplay(t *testing.T) {
 	store, _ := newTestStore(t)
 	req := validRequest()
@@ -144,6 +214,20 @@ func TestAuthorize_RejectsWrongRepoWrongToolWrongRunAndReplay(t *testing.T) {
 
 	require.NoError(t, store.Revoke(created.Handle))
 	assert.Error(t, store.Authorize(created.ExecutorBearer, req.RunID, req.EnclaveBackend, req.Repository, "issue_read"), "revoked identity must be rejected")
+}
+
+func TestAuthorizeExecutor_ReturnsIdentityHandleForIsolation(t *testing.T) {
+	store, _ := newTestStore(t)
+	req := validRequest()
+	created, err := store.CreateOrConfirm(req)
+	require.NoError(t, err)
+
+	handle, err := store.AuthorizeExecutor(created.ExecutorBearer, req.Repository, "issue_read")
+	require.NoError(t, err)
+	assert.Equal(t, created.Handle, handle, "AuthorizeExecutor must expose the identity's own handle so callers can bind a delegation-specific isolation context instead of falling back to a shared identity")
+
+	_, err = store.AuthorizeExecutor("unknown-bearer", req.Repository, "issue_read")
+	assert.Error(t, err)
 }
 
 func TestExpiry_AutomaticAndExplicit(t *testing.T) {
@@ -165,6 +249,29 @@ func TestExpiry_AutomaticAndExplicit(t *testing.T) {
 
 	err = store.Authorize(created.ExecutorBearer, req.RunID, req.EnclaveBackend, req.Repository, "issue_read")
 	assert.Error(t, err, "expired identity must not continue a session")
+}
+
+func TestNewStore_ClonesAllowedOwnersDefensively(t *testing.T) {
+	envelope := validEnvelope()
+	envelope.AllowedOwners = []string{"github"}
+	store, err := NewStore(envelope, 1)
+	require.NoError(t, err)
+
+	// Mutate the original slice passed to NewStore
+	envelope.AllowedOwners[0] = "mutated-owner"
+
+	// The store's internal copy must remain "github"
+	req := validRequest()
+	req.Repository = "github/gh-aw"
+	_, err = store.CreateOrConfirm(req)
+	require.NoError(t, err, "mutating original envelope.AllowedOwners must not affect store policy")
+
+	reqMutated := validRequest()
+	reqMutated.InvocationID = "inv-2"
+	reqMutated.IdempotencyKey = "idem-2"
+	reqMutated.Repository = "mutated-owner/repo"
+	_, err = store.CreateOrConfirm(reqMutated)
+	assert.Error(t, err, "mutated owner must not be admitted by store")
 }
 
 func TestRevoke_IsIdempotent(t *testing.T) {

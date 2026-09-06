@@ -23,7 +23,9 @@ import (
 	"github.com/github/gh-aw-mcpg/internal/httputil"
 	"github.com/github/gh-aw-mcpg/internal/logger"
 	"github.com/github/gh-aw-mcpg/internal/mcp"
+	"github.com/github/gh-aw-mcpg/internal/sanitize"
 	"github.com/github/gh-aw-mcpg/internal/tracing"
+	"github.com/github/gh-aw-mcpg/internal/util"
 )
 
 var artifactZipDownloadPathPattern = regexp.MustCompile(`^/repos/[^/]+/[^/]+/actions/artifacts/\d+/zip$`)
@@ -131,13 +133,21 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		}
 	}
 
+	// Enclave and delegation profiles admit private repositories that are
+	// chosen at runtime by the controller, so the selector, its request paths,
+	// and the run/entry/invocation identifiers bound to it are all secrets.
+	// Enable process-wide redaction before anything else in the request path
+	// can log, so a missed call site cannot disclose them under DEBUG=*.
+	if cfg.Enclave != nil || delegation != nil {
+		sanitize.EnablePrivateSelectorRedaction()
+	}
+
 	apiURL := cfg.GitHubAPIURL
 	if apiURL == "" {
 		apiURL = DefaultGitHubAPIBase
 	}
 	apiURL = strings.TrimRight(apiURL, "/")
 	logProxy.Printf("Using upstream GitHub API URL: %s", apiURL)
-
 	// Initialize DIFC components (defaults to filter mode for the proxy).
 	// NewComponents returns any parse error so we can warn without parsing twice.
 	difcComponents, difcParseErr := difc.NewComponents(cfg.DIFCMode, difc.EnforcementFilter)
@@ -183,8 +193,17 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	} else {
 		logProxy.Printf("No guard policy configured, running without policy enforcement")
 	}
-	if s.delegation != nil && !s.guardInitialized {
-		return nil, fmt.Errorf("guard policy is required for delegation proxy mode")
+	if s.delegation != nil {
+		if !s.guardInitialized {
+			return nil, fmt.Errorf("guard policy is required for delegation proxy mode")
+		}
+		initialLabels, ok := s.AgentRegistry.Get(proxyAgentID)
+		if !ok {
+			return nil, fmt.Errorf("delegation guard did not initialize agent labels")
+		}
+		s.AgentRegistry.SetDefaultLabels(nil, initialLabels.GetIntegrityTags())
+		s.Mode = difc.EnforcementPropagate
+		s.Evaluator.SetMode(difc.EnforcementPropagate)
 	}
 	if s.enclave != nil {
 		if !s.guardInitialized {
@@ -272,10 +291,32 @@ func (s *Server) Handler() http.Handler {
 		server:       s,
 		CachedTracer: tracing.CachedTracer{Tracer: tracing.Tracer()},
 	}
-	if s.enclave != nil {
+	// Delegation mode admits private repositories the same way enclave mode
+	// does, so the request path is invocation-scoped secret material and must
+	// not be recorded as a span attribute either.
+	if s.enclave != nil || s.delegation != nil {
 		return tracing.WrapHTTPHandlerWithoutPath(handler, "proxy.request")
 	}
 	return tracing.WrapHTTPHandler(handler, "proxy.request")
+}
+
+// sensitiveLogging reports whether this server admits private repositories
+// chosen at runtime (enclave or delegation mode). In those modes repository
+// selectors, request paths, and the run/entry/invocation identifiers bound to
+// them are secret and must only ever be logged as stable hashes.
+func (s *Server) sensitiveLogging() bool {
+	return s.enclave != nil || s.delegation != nil
+}
+
+// logSafePath renders an upstream API path for logs, error strings, and span
+// attributes. In enclave and delegation modes the path embeds a private
+// repository selector plus issue/PR/ref identifiers, so it is replaced with a
+// stable hash that still correlates across log lines.
+func (s *Server) logSafePath(path string) string {
+	if !s.sensitiveLogging() {
+		return path
+	}
+	return util.HashForLog(path, 16, "path:")
 }
 
 // restBackendCaller translates guard CallTool requests into GitHub REST API
@@ -291,6 +332,11 @@ func (r *restBackendCaller) CallTool(ctx context.Context, toolName string, args 
 	if !ok {
 		return nil, fmt.Errorf("unexpected args type: %T", args)
 	}
+
+	// Enclave and delegation modes admit only private, dynamically-discovered
+	// repository paths; never write raw path/owner/repo selectors to logs in
+	// those modes, only their non-reversible hashes.
+	sensitive := r.server.sensitiveLogging()
 
 	var (
 		apiPath                                 string
@@ -335,7 +381,11 @@ func (r *restBackendCaller) CallTool(ctx context.Context, toolName string, args 
 		var parseErr error
 		collabOwner, collabRepo, collabUsername, parseErr = githubhttp.ParseCollaboratorPermissionArgs(argsMap)
 		if parseErr != nil {
-			logProxy.Printf("restBackendCaller: get_collaborator_permission missing args (owner=%q repo=%q username=%q)", collabOwner, collabRepo, collabUsername)
+			if sensitive {
+				logProxy.Printf("restBackendCaller: get_collaborator_permission missing args")
+			} else {
+				logProxy.Printf("restBackendCaller: get_collaborator_permission missing args (owner=%q repo=%q username=%q)", collabOwner, collabRepo, collabUsername)
+			}
 			return nil, parseErr
 		}
 		apiPath = fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission", collabOwner, collabRepo, collabUsername)
@@ -345,7 +395,7 @@ func (r *restBackendCaller) CallTool(ctx context.Context, toolName string, args 
 		return nil, fmt.Errorf("unsupported tool: %s", toolName)
 	}
 
-	logProxy.Printf("restBackendCaller: %s → GET %s", toolName, apiPath)
+	logProxy.Printf("restBackendCaller: %s → GET %s", toolName, r.server.logSafePath(apiPath))
 
 	// Use the server's configured token for enrichment calls rather than the
 	// client's auth header. Enrichment needs org-level visibility (e.g. to get
@@ -371,6 +421,7 @@ func (r *restBackendCaller) CallTool(ctx context.Context, toolName string, args 
 				return resp, nil
 			},
 			logProxy.Printf,
+			sensitive,
 		)
 		if err != nil {
 			logProxy.Printf("restBackendCaller: %s returned error: %v", toolName, err)
@@ -433,7 +484,13 @@ func (s *Server) forwardToGitHub(ctx context.Context, method, path string, body 
 			url += "?" + query
 		}
 	}
-	logProxy.Printf("forwarding %s %s → %s", method, path, url)
+	if s.enclave != nil {
+		logProxy.Printf("forwarding enclave request: %s", method)
+	} else if s.delegation != nil {
+		logProxy.Printf("forwarding delegated request: %s", method)
+	} else {
+		logProxy.Printf("forwarding %s %s → %s", method, path, url)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {

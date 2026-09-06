@@ -64,7 +64,10 @@ func MarshalAndSanitize(value any) string {
 	return SanitizeString(string(resultJSON))
 }
 
-// SanitizeString replaces potential secrets in a string with [REDACTED]
+// SanitizeString replaces potential secrets in a string with [REDACTED].
+// When private-selector redaction is enabled (enclave and delegation proxy
+// profiles), repository selectors, repository API paths, and runtime
+// delegation identifiers are additionally replaced with stable hashes.
 func SanitizeString(message string) string {
 	result := message
 	for _, pattern := range SecretPatterns {
@@ -80,7 +83,7 @@ func SanitizeString(message string) string {
 			return "[REDACTED]"
 		})
 	}
-	return result
+	return RedactPrivateSelectorsIfEnabled(result)
 }
 
 // SanitizeJSON sanitizes a JSON payload by applying regex patterns to the entire string
